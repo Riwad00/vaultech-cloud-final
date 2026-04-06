@@ -182,23 +182,65 @@ def deploy_endpoint(
 
 
 def test_endpoint(endpoint_name: str, region: str) -> dict:
-    """Test the deployed endpoint with sample pieces."""
+    """Test the deployed endpoint with sample pieces and compare against the local model.
+
+    For each sample, invokes the SageMaker endpoint AND runs the local XGBoost
+    model on the same input, then reports both predictions side-by-side along
+    with the absolute delta. A small delta (typically <0.01 s) proves that the
+    deployed endpoint is producing the same predictions as the local model.
+    """
+    import pandas as pd
+    from xgboost import XGBRegressor
+
+    # Load the local model for comparison
+    local_model = XGBRegressor()
+    local_model.load_model(str(MODEL_FILE))
+
     runtime = boto3.client("sagemaker-runtime", region_name=region)
     samples = [
-        {"name": "matrix 5052 normal", "payload": "5052,18.3,13.5"},
-        {"name": "matrix 5090 normal", "payload": "5090,17.8,14.0"},
-        {"name": "matrix 5091 normal", "payload": "5091,18.6,13.8"},
-        {"name": "matrix 5052 slow",   "payload": "5052,30.0,13.5"},
+        {"name": "matrix 5052 normal", "die_matrix": 5052, "strike2": 18.3, "oee": 13.5},
+        {"name": "matrix 5090 normal", "die_matrix": 5090, "strike2": 17.8, "oee": 14.0},
+        {"name": "matrix 5091 normal", "die_matrix": 5091, "strike2": 18.6, "oee": 13.8},
+        {"name": "matrix 5052 slow",   "die_matrix": 5052, "strike2": 30.0, "oee": 13.5},
     ]
+
     results = {}
+    max_delta = 0.0
     for sample in samples:
+        payload = f"{sample['die_matrix']},{sample['strike2']},{sample['oee']}"
+
+        # SageMaker endpoint prediction
         response = runtime.invoke_endpoint(
             EndpointName=endpoint_name,
             ContentType="text/csv",
-            Body=sample["payload"],
+            Body=payload,
         )
-        prediction = float(response["Body"].read().decode("utf-8").strip())
-        results[sample["name"]] = {"input": sample["payload"], "predicted_bath_s": round(prediction, 2)}
+        sm_prediction = float(response["Body"].read().decode("utf-8").strip())
+
+        # Local model prediction (same input)
+        local_input = pd.DataFrame([[sample["die_matrix"], sample["strike2"], sample["oee"]]])
+        local_prediction = float(local_model.predict(local_input)[0])
+
+        delta = abs(sm_prediction - local_prediction)
+        max_delta = max(max_delta, delta)
+        results[sample["name"]] = {
+            "input": payload,
+            "sagemaker_prediction_s": round(sm_prediction, 4),
+            "local_prediction_s": round(local_prediction, 4),
+            "abs_delta_s": round(delta, 4),
+            "match": delta < 0.01,
+        }
+
+    results["_summary"] = {
+        "samples_tested": len(samples),
+        "max_abs_delta_s": round(max_delta, 4),
+        "all_match_within_0.01s": max_delta < 0.01,
+        "verdict": (
+            "PASS — endpoint and local model produce identical predictions"
+            if max_delta < 0.01
+            else f"WARN — predictions differ by up to {max_delta:.4f}s"
+        ),
+    }
     return results
 
 
