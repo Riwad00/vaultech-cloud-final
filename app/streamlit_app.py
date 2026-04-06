@@ -18,7 +18,7 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from vaultech_analysis.inference import Predictor
+from vaultech_analysis.inference import get_predictor
 
 GOLD_FILE = PROJECT_ROOT / "data" / "gold" / "pieces.parquet"
 
@@ -55,7 +55,8 @@ CUMULATIVE_LABELS = [
 
 @st.cache_resource
 def load_predictor():
-    return Predictor(model_dir=PROJECT_ROOT / "models", gold_file=GOLD_FILE)
+    # Auto-selects SageMakerPredictor if SAGEMAKER_ENDPOINT_NAME is set, else local
+    return get_predictor()
 
 
 @st.cache_data
@@ -139,6 +140,31 @@ if selected_rows:
     piece = filtered.iloc[idx]
 
     st.subheader(f"Piece Detail — {piece['piece_id']} (Matrix {int(piece['die_matrix'])})")
+
+    # Make a fresh prediction for the selected piece (this hits SageMaker in remote mode
+    # and shows the inference debug info — proves the prediction came from the endpoint)
+    predictor = load_predictor()
+    oee_input = piece['oee_cycle_time_s'] if pd.notna(piece['oee_cycle_time_s']) else None
+    selection_result = predictor.predict(
+        die_matrix=int(piece['die_matrix']),
+        lifetime_2nd_strike_s=float(piece['lifetime_2nd_strike_s']),
+        oee_cycle_time_s=oee_input,
+    )
+
+    # Inference debug panel — shows endpoint payload, response, latency
+    if "inference_debug" in selection_result:
+        with st.expander("🔍 Inference Debug — SageMaker endpoint call", expanded=True):
+            debug = selection_result["inference_debug"]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Predicted bath time", f"{selection_result['predicted_bath_time_s']}s")
+            c2.metric("Round-trip latency", f"{debug['latency_ms']} ms")
+            c3.metric("Endpoint", debug['endpoint'])
+            st.markdown(f"**Region:** `{debug['region']}`")
+            st.markdown(f"**Input payload (text/csv):** `{debug['input_payload']}`")
+            st.markdown(f"**Raw endpoint response:** `{debug['raw_response']}`")
+    else:
+        st.info(f"Local prediction: {selection_result['predicted_bath_time_s']}s "
+                f"(set SAGEMAKER_ENDPOINT_NAME to use the SageMaker endpoint)")
 
     matrix_ref = reference.loc[int(piece["die_matrix"])]
 

@@ -1,0 +1,34 @@
+{
+  "family": "vaultech-app",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::126279419868:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::126279419868:role/vaultech-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "vaultech-app",
+      "image": "126279419868.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8501,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {"name": "SAGEMAKER_ENDPOINT_NAME", "value": "vaultech-bath-predictor"},
+        {"name": "AWS_DEFAULT_REGION", "value": "eu-west-1"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/vaultech-app",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

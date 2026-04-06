@@ -11,10 +11,10 @@ COPY pyproject.toml uv.lock README.md ./
 # Install dependencies (no dev deps, no editable install yet)
 RUN uv sync --no-dev --no-install-project
 
-# Copy only what's needed to run the app
+# Copy only what's needed to run the app — no models/, model lives in SageMaker
 COPY src/ src/
 COPY app/ app/
-COPY models/ models/
+COPY models/model_metadata.json models/model_metadata.json
 COPY data/gold/ data/gold/
 
 # Install the project itself
