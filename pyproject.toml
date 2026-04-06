@@ -12,10 +12,10 @@ dependencies = [
     "psycopg2-binary",
     "pyarrow",
     "pytest",
-    "scikit-learn",
+    "scikit-learn<1.6",
     "sqlalchemy",
     "streamlit>=1.40",
-    "xgboost",
+    "xgboost==1.7.6",
 ]
 
 [project.scripts]

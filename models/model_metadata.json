@@ -7,9 +7,9 @@
   ],
   "target": "lifetime_bath_s",
   "metrics": {
-    "rmse": 1.837,
+    "rmse": 1.836,
     "mae": 0.918,
-    "r2": 0.6873
+    "r2": 0.6874
   },
   "training": {
     "n_samples_train": 134188,

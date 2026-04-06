@@ -11,44 +11,77 @@ Usage:
 
 import argparse
 import json
+import shutil
+import tarfile
+import time
 from pathlib import Path
+
+import boto3
+from botocore.exceptions import ClientError
+
+# SageMaker built-in XGBoost container account IDs per region
+# https://docs.aws.amazon.com/sagemaker/latest/dg-ecr-paths/ecr-eu-west-1.html
+XGBOOST_IMAGE_ACCOUNTS = {
+    "eu-west-1": "141502667606",
+    "us-east-1": "683313688378",
+    "us-west-2": "246618743249",
+}
 
 
 MODEL_DIR = Path(__file__).resolve().parent.parent / "models"
 MODEL_FILE = MODEL_DIR / "xgboost_bath_predictor.json"
 METADATA_FILE = MODEL_DIR / "model_metadata.json"
+EXECUTION_ROLE_NAME = "SageMakerExecutionRole"
+
+
+def _get_execution_role_arn() -> str:
+    """Get the SageMaker execution role ARN, creating it if needed."""
+    iam = boto3.client("iam")
+    try:
+        return iam.get_role(RoleName=EXECUTION_ROLE_NAME)["Role"]["Arn"]
+    except ClientError:
+        trust = {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "sagemaker.amazonaws.com"},
+                "Action": "sts:AssumeRole",
+            }],
+        }
+        role = iam.create_role(
+            RoleName=EXECUTION_ROLE_NAME,
+            AssumeRolePolicyDocument=json.dumps(trust),
+        )
+        for policy in [
+            "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess",
+            "arn:aws:iam::aws:policy/AmazonS3FullAccess",
+        ]:
+            iam.attach_role_policy(RoleName=EXECUTION_ROLE_NAME, PolicyArn=policy)
+        time.sleep(10)  # IAM eventual consistency
+        return role["Role"]["Arn"]
 
 
 def package_model(model_path: Path, output_dir: Path) -> Path:
-    """Package the XGBoost model as a .tar.gz archive for SageMaker.
+    """Package the XGBoost model as a .tar.gz archive for SageMaker."""
+    # SageMaker XGBoost container expects file named 'xgboost-model' at archive root
+    staging_dir = output_dir / "_sagemaker_staging"
+    staging_dir.mkdir(exist_ok=True)
+    staged_file = staging_dir / "xgboost-model"
+    shutil.copy(model_path, staged_file)
 
-    SageMaker's built-in XGBoost container expects a file named
-    'xgboost-model' at the root of the archive.
+    tar_path = output_dir / "model.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tar:
+        tar.add(staged_file, arcname="xgboost-model")
 
-    Args:
-        model_path: Path to the trained model JSON file.
-        output_dir: Directory where the .tar.gz will be created.
-
-    Returns:
-        Path to the created .tar.gz file.
-    """
-    # TODO: implement
-    raise NotImplementedError
+    shutil.rmtree(staging_dir)
+    return tar_path
 
 
 def upload_to_s3(local_path: Path, bucket: str, key: str) -> str:
-    """Upload a local file to S3.
-
-    Args:
-        local_path: Path to the local file.
-        bucket: S3 bucket name.
-        key: S3 object key.
-
-    Returns:
-        Full S3 URI (s3://bucket/key).
-    """
-    # TODO: implement
-    raise NotImplementedError
+    """Upload a local file to S3."""
+    s3 = boto3.client("s3")
+    s3.upload_file(str(local_path), bucket, key)
+    return f"s3://{bucket}/{key}"
 
 
 def register_model(
@@ -57,23 +90,44 @@ def register_model(
     region: str,
     metrics: dict,
 ) -> str:
-    """Register the model in SageMaker Model Registry.
+    """Register the model in SageMaker Model Registry."""
+    sm = boto3.client("sagemaker", region_name=region)
 
-    Creates the Model Package Group if it doesn't exist, then registers
-    a new Model Package version with the XGBoost container image,
-    the S3 model artifact, and evaluation metrics.
+    # Create the Model Package Group if it doesn't exist
+    try:
+        sm.describe_model_package_group(ModelPackageGroupName=model_package_group_name)
+    except ClientError:
+        sm.create_model_package_group(
+            ModelPackageGroupName=model_package_group_name,
+            ModelPackageGroupDescription="VaultTech bath time predictor",
+        )
 
-    Args:
-        s3_model_uri: S3 URI of the packaged model (.tar.gz).
-        model_package_group_name: Name for the Model Package Group.
-        region: AWS region.
-        metrics: Dict with 'rmse', 'mae', 'r2' keys.
+    # Get XGBoost container image URI
+    account = XGBOOST_IMAGE_ACCOUNTS.get(region)
+    if not account:
+        raise ValueError(f"No XGBoost image account known for region {region}")
+    image_uri = f"{account}.dkr.ecr.{region}.amazonaws.com/sagemaker-xgboost:1.7-1"
 
-    Returns:
-        The Model Package ARN.
-    """
-    # TODO: implement
-    raise NotImplementedError
+    # Register the model package
+    response = sm.create_model_package(
+        ModelPackageGroupName=model_package_group_name,
+        ModelPackageDescription="XGBoost bath time predictor",
+        InferenceSpecification={
+            "Containers": [{
+                "Image": image_uri,
+                "ModelDataUrl": s3_model_uri,
+            }],
+            "SupportedContentTypes": ["text/csv"],
+            "SupportedResponseMIMETypes": ["text/csv"],
+        },
+        ModelApprovalStatus="Approved",
+        CustomerMetadataProperties={
+            "rmse": str(metrics["rmse"]),
+            "mae": str(metrics["mae"]),
+            "r2": str(metrics["r2"]),
+        },
+    )
+    return response["ModelPackageArn"]
 
 
 def deploy_endpoint(
@@ -82,39 +136,70 @@ def deploy_endpoint(
     region: str,
     instance_type: str = "ml.t2.medium",
 ) -> str:
-    """Deploy a real-time SageMaker endpoint from a registered Model Package.
+    """Deploy a real-time SageMaker endpoint from a registered Model Package."""
+    sm = boto3.client("sagemaker", region_name=region)
+    role_arn = _get_execution_role_arn()
 
-    Creates a SageMaker Model, Endpoint Configuration, and Endpoint.
-    Waits until the endpoint status is 'InService'.
+    model_name = f"{endpoint_name}-model"
+    config_name = f"{endpoint_name}-config"
 
-    Args:
-        model_package_arn: ARN of the registered Model Package.
-        endpoint_name: Name for the endpoint.
-        region: AWS region.
-        instance_type: EC2 instance type for the endpoint.
+    # Clean up any existing resources with the same names
+    for delete_fn, kwargs in [
+        (sm.delete_endpoint, {"EndpointName": endpoint_name}),
+        (sm.delete_endpoint_config, {"EndpointConfigName": config_name}),
+        (sm.delete_model, {"ModelName": model_name}),
+    ]:
+        try:
+            delete_fn(**kwargs)
+        except ClientError:
+            pass
 
-    Returns:
-        The endpoint name.
-    """
-    # TODO: implement
-    raise NotImplementedError
+    # Create Model from the registered package
+    sm.create_model(
+        ModelName=model_name,
+        ExecutionRoleArn=role_arn,
+        Containers=[{"ModelPackageName": model_package_arn}],
+    )
+
+    # Create Endpoint Config
+    sm.create_endpoint_config(
+        EndpointConfigName=config_name,
+        ProductionVariants=[{
+            "VariantName": "AllTraffic",
+            "ModelName": model_name,
+            "InitialInstanceCount": 1,
+            "InstanceType": instance_type,
+        }],
+    )
+
+    # Create Endpoint and wait for InService
+    sm.create_endpoint(EndpointName=endpoint_name, EndpointConfigName=config_name)
+    print(f"  Waiting for endpoint to become InService (this can take ~5-10 min)...")
+    waiter = sm.get_waiter("endpoint_in_service")
+    waiter.wait(EndpointName=endpoint_name, WaiterConfig={"Delay": 30, "MaxAttempts": 40})
+
+    return endpoint_name
 
 
 def test_endpoint(endpoint_name: str, region: str) -> dict:
-    """Test the deployed endpoint with sample pieces.
-
-    Invokes the endpoint with representative inputs and compares
-    the predictions against expected ranges.
-
-    Args:
-        endpoint_name: Name of the deployed endpoint.
-        region: AWS region.
-
-    Returns:
-        Dict with test results and predictions.
-    """
-    # TODO: implement
-    raise NotImplementedError
+    """Test the deployed endpoint with sample pieces."""
+    runtime = boto3.client("sagemaker-runtime", region_name=region)
+    samples = [
+        {"name": "matrix 5052 normal", "payload": "5052,18.3,13.5"},
+        {"name": "matrix 5090 normal", "payload": "5090,17.8,14.0"},
+        {"name": "matrix 5091 normal", "payload": "5091,18.6,13.8"},
+        {"name": "matrix 5052 slow",   "payload": "5052,30.0,13.5"},
+    ]
+    results = {}
+    for sample in samples:
+        response = runtime.invoke_endpoint(
+            EndpointName=endpoint_name,
+            ContentType="text/csv",
+            Body=sample["payload"],
+        )
+        prediction = float(response["Body"].read().decode("utf-8").strip())
+        results[sample["name"]] = {"input": sample["payload"], "predicted_bath_s": round(prediction, 2)}
+    return results
 
 
 def main():
@@ -125,7 +210,6 @@ def main():
     parser.add_argument("--model-package-group", required=True, help="Model Package Group name")
     args = parser.parse_args()
 
-    # Load model metadata for metrics
     with open(METADATA_FILE) as f:
         metadata = json.load(f)
 
@@ -133,30 +217,25 @@ def main():
     print("SageMaker Deployment Pipeline")
     print("=" * 60)
 
-    # Step 1: Package
     print("\n[1/5] Packaging model artifact...")
     tar_path = package_model(MODEL_FILE, MODEL_DIR)
     print(f"  Created: {tar_path}")
 
-    # Step 2: Upload to S3
     print("\n[2/5] Uploading to S3...")
     s3_key = "models/xgboost-bath-predictor/model.tar.gz"
     s3_uri = upload_to_s3(tar_path, args.bucket, s3_key)
     print(f"  Uploaded: {s3_uri}")
 
-    # Step 3: Register in Model Registry
     print("\n[3/5] Registering in Model Registry...")
     model_package_arn = register_model(
         s3_uri, args.model_package_group, args.region, metadata["metrics"]
     )
     print(f"  Registered: {model_package_arn}")
 
-    # Step 4: Deploy endpoint
     print("\n[4/5] Deploying endpoint...")
     endpoint = deploy_endpoint(model_package_arn, args.endpoint_name, args.region)
     print(f"  Endpoint live: {endpoint}")
 
-    # Step 5: Test
     print("\n[5/5] Testing endpoint...")
     results = test_endpoint(args.endpoint_name, args.region)
     print(f"  Results: {json.dumps(results, indent=2)}")
