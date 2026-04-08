@@ -41,3 +41,4 @@ target/
 
 # uv lock (optional, remove if you want reproducible builds)
 # uv.lock
+.aws_env

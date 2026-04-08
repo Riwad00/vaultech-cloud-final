@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     env_file: .env
+    restart: unless-stopped
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -14,6 +15,9 @@ services:
 
   flyway:
     image: flyway/flyway:10
+    # No restart policy — Flyway is a one-shot migration runner. It should
+    # run to completion and exit; restarting it would waste resources trying
+    # to re-apply migrations that are already at the latest version.
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,6 +35,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    restart: unless-stopped
     ports:
       - "8501:8501"
     depends_on:
