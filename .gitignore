@@ -42,3 +42,7 @@ target/
 # uv lock (optional, remove if you want reproducible builds)
 # uv.lock
 .aws_env
+
+# Exam API local artifacts
+api/.venv/
+api/uv.lock
