@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .diagnose import diagnose
 
@@ -51,6 +52,23 @@ async def _http_exception_handler(_request: Request, exc: HTTPException) -> JSON
     if isinstance(detail, dict) and "error" in detail:
         return JSONResponse(status_code=exc.status_code, content=detail)
     return JSONResponse(status_code=exc.status_code, content={"error": str(detail)})
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """§2.1 — invalid or missing body fields must return HTTP 400 with {"error": "..."}.
+
+    FastAPI's default is HTTP 422; we override to 400 and flatten the error message.
+    """
+    errors = exc.errors()
+    if errors:
+        first = errors[0]
+        loc = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+        msg = first.get("msg", "invalid request body")
+        message = f"{loc}: {msg}" if loc else msg
+    else:
+        message = "invalid request body"
+    return JSONResponse(status_code=400, content={"error": message})
 
 
 @app.post("/diagnose")
