@@ -4,12 +4,12 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
-  "executionRoleArn": "arn:aws:iam::126279419868:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::126279419868:role/vaultech-ecs-task-role",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/vaultech-ecs-task-role",
   "containerDefinitions": [
     {
       "name": "vaultech-app",
-      "image": "126279419868.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app:latest",
+      "image": "<ACCOUNT_ID>.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app:latest",
       "essential": true,
       "portMappings": [
         {

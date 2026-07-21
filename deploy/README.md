@@ -61,7 +61,7 @@ Resource names:
 
 | Resource | Name / ID |
 |---|---|
-| ECR repository | `126279419868.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app` |
+| ECR repository | `<ACCOUNT_ID>.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app` |
 | ECS cluster | `vaultech-cluster` |
 | ECS service | `vaultech-service` |
 | Task definition | `vaultech-app:1` (1 vCPU, 2 GB memory, Fargate) |
@@ -82,7 +82,7 @@ The task definition (`deploy/ecs-task-definition.json`) sets `SAGEMAKER_ENDPOINT
 docker buildx build --platform linux/amd64 -t vaultech-app:sagemaker --load .
 
 # 2. Tag and push
-ECR_URI="126279419868.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app"
+ECR_URI="<ACCOUNT_ID>.dkr.ecr.eu-west-1.amazonaws.com/vaultech-app"
 docker tag vaultech-app:sagemaker "${ECR_URI}:latest"
 docker push "${ECR_URI}:latest"
 
